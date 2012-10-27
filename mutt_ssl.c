@@ -88,6 +88,7 @@ static int interactive_check_cert (X509 *cert, int idx, int len);
 static void ssl_get_client_cert(sslsockdata *ssldata, CONNECTION *conn);
 static int ssl_passwd_cb(char *buf, int size, int rwflag, void *userdata);
 static int ssl_negotiate (CONNECTION *conn, sslsockdata*);
+static const char * ssl_error (void);
 
 /* mutt_ssl_starttls: Negotiate TLS over an already opened connection.
  *   TODO: Merge this code better with ssl_socket_open. */
@@ -95,29 +96,53 @@ int mutt_ssl_starttls (CONNECTION* conn)
 {
   sslsockdata* ssldata;
   int maxbits;
+  long ssl_options;
 
   if (ssl_init())
     goto bail;
 
   ssldata = (sslsockdata*) safe_calloc (1, sizeof (sslsockdata));
-  /* the ssl_use_xxx protocol options don't apply. We must use TLS in TLS. */
-  if (! (ssldata->ctx = SSL_CTX_new (TLSv1_client_method ())))
+  /* the ssl_use_xxx protocol options don't apply. We must use TLS in TLS.
+   * However, we need to be able to negotiate amongst various TLS versions,
+   * which at present can only be done with the SSLv23_client_method;
+   * TLSv1_client_method gives us explicitly TLSv1.0, not 1.1 or 1.2
+   * (True as of OpenSSL 1.0.1c)
+   */
+  if (! (ssldata->ctx = SSL_CTX_new (SSLv23_client_method ())))
   {
-    dprint (1, (debugfile, "mutt_ssl_starttls: Error allocating SSL_CTX\n"));
+    dprint (1, (debugfile, "mutt_ssl_starttls: Error allocating SSL_CTX: %s\n",
+       ssl_error()));
     goto bail_ssldata;
+  }
+
+  /* now fix it to disable SSL, leaving just TLS */
+  ssl_options = 0
+#ifdef SSL_OP_NO_SSLv2
+          | SSL_OP_NO_SSLv2
+#endif
+#ifdef SSL_OP_NO_SSLv3
+          | SSL_OP_NO_SSLv3
+#endif
+    ;
+  if (! (SSL_CTX_set_options (ssldata->ctx, ssl_options)))
+  {
+    dprint (1, (debugfile, "mutt_ssl_starttls: Error setting SSL options: %s\n",
+       ssl_error()));
   }
 
   ssl_get_client_cert(ssldata, conn);
 
   if (! (ssldata->ssl = SSL_new (ssldata->ctx)))
   {
-    dprint (1, (debugfile, "mutt_ssl_starttls: Error allocating SSL\n"));
+    dprint (1, (debugfile, "mutt_ssl_starttls: Error allocating SSL: %s\n",
+       ssl_error()));
     goto bail_ctx;
   }
 
   if (SSL_set_fd (ssldata->ssl, conn->fd) != 1)
   {
-    dprint (1, (debugfile, "mutt_ssl_starttls: Error setting fd\n"));
+    dprint (1, (debugfile, "mutt_ssl_starttls: Error setting fd: %s\n",
+       ssl_error()));
     goto bail_ssl;
   }
 
@@ -342,6 +367,18 @@ static int ssl_negotiate (CONNECTION *conn, sslsockdata* ssldata)
   /* This only exists in 0.9.6 and above. Without it we may get interrupted
    *   reads or writes. Bummer. */
   SSL_set_mode (ssldata->ssl, SSL_MODE_AUTO_RETRY);
+#endif
+
+#if OPENSSL_VERSION_NUMBER >= 0x0090806fL && !defined(OPENSSL_NO_TLSEXT)
+  /* TLS Virtual-hosting requires that the server present the correct
+   * certificate; to do this, the ServerNameIndication TLS extension is used.
+   * If TLS is negotiated, and OpenSSL is recent enough that it might have
+   * support, and support was enabled when OpenSSL was built, mutt supports
+   * sending the hostname we think we're connecting to, so a server can send
+   * back the correct certificate.
+   * This has been tested over SMTP against Exim 4.80.
+   * Not yet found an IMAP server which supports this. */
+  SSL_set_tlsext_host_name (ssldata->ssl, conn->account.host);
 #endif
 
   if ((err = SSL_connect (ssldata->ssl)) != 1)
@@ -1060,4 +1097,14 @@ static int ssl_passwd_cb(char *buf, int size, int rwflag, void *userdata)
     return 0;
 
   return snprintf(buf, size, "%s", account->pass);
+}
+
+static const char * ssl_error (void)
+{
+  /* OpenSSL documents buffer must be at least 120 characters; allocate some
+   * more to allow for growth */
+  static char ssl_errbuf[256];
+
+  ERR_error_string_n(ERR_get_error(), ssl_errbuf, sizeof(ssl_errbuf));
+  return ssl_errbuf;
 }
