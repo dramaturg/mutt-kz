@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 1996-2000,2002 Michael R. Elkins <me@mutt.org>
+ * Copyright (C) 1996-2000,2002,2012 Michael R. Elkins <me@mutt.org>
  *
  *     This program is free software; you can redistribute it and/or modify
  *     it under the terms of the GNU General Public License as published by
@@ -26,11 +26,6 @@
 #include "mbyte.h"
 #include "sidebar.h"
 
-#include <string.h>
-#include <stdlib.h>
-
-extern int Charset_is_utf8; /* FIXME: bad modularisation */
-
 extern size_t UngetCount;
 
 char* SearchBuffers[MENU_MAX];
@@ -56,58 +51,93 @@ static void print_enriched_string (int attr, unsigned char *s, int do_color)
 	  case M_TREE_LLCORNER:
 	    if (option (OPTASCIICHARS))
 	      addch ('`');
+#ifdef WACS_LLCORNER
+	    else
+	      add_wch(WACS_LLCORNER);
+#else
 	    else if (Charset_is_utf8)
 	      addstr ("\342\224\224"); /* WACS_LLCORNER */
 	    else
 	      addch (ACS_LLCORNER);
+#endif
 	    break;
 	  case M_TREE_ULCORNER:
 	    if (option (OPTASCIICHARS))
 	      addch (',');
+#ifdef WACS_ULCORNER
+	    else
+	      add_wch(WACS_ULCORNER);
+#else
 	    else if (Charset_is_utf8)
 	      addstr ("\342\224\214"); /* WACS_ULCORNER */
 	    else
 	      addch (ACS_ULCORNER);
+#endif
 	    break;
 	  case M_TREE_LTEE:
 	    if (option (OPTASCIICHARS))
 	      addch ('|');
+#ifdef WACS_LTEE
+	    else
+	      add_wch(WACS_LTEE);
+#else
 	    else if (Charset_is_utf8)
 	      addstr ("\342\224\234"); /* WACS_LTEE */
 	    else
 	      addch (ACS_LTEE);
+#endif
 	    break;
 	  case M_TREE_HLINE:
 	    if (option (OPTASCIICHARS))
 	      addch ('-');
+#ifdef WACS_HLINE
+	    else
+	      add_wch(WACS_HLINE);
+#else
 	    else if (Charset_is_utf8)
 	      addstr ("\342\224\200"); /* WACS_HLINE */
 	    else
 	      addch (ACS_HLINE);
+#endif
 	    break;
 	  case M_TREE_VLINE:
 	    if (option (OPTASCIICHARS))
 	      addch ('|');
+#ifdef WACS_VLINE
+	    else
+	      add_wch(WACS_VLINE);
+#else
 	    else if (Charset_is_utf8)
 	      addstr ("\342\224\202"); /* WACS_VLINE */
 	    else
 	      addch (ACS_VLINE);
+#endif
 	    break;
 	  case M_TREE_TTEE:
 	    if (option (OPTASCIICHARS))
 	      addch ('-');
+#ifdef WACS_TTEE
+	    else
+	      add_wch(WACS_TTEE);
+#else
 	    else if (Charset_is_utf8)
 	      addstr ("\342\224\254"); /* WACS_TTEE */
 	    else
 	      addch (ACS_TTEE);
+#endif
 	    break;
 	  case M_TREE_BTEE:
 	    if (option (OPTASCIICHARS))
 	      addch ('-');
+#ifdef WACS_BTEE
+	    else
+	      add_wch(WACS_BTEE);
+#else
 	    else if (Charset_is_utf8)
 	      addstr ("\342\224\264"); /* WACS_BTEE */
 	    else
 	      addch (ACS_BTEE);
+#endif
 	    break;
 	  case M_TREE_SPACE:
 	    addch (' ');
@@ -130,7 +160,7 @@ static void print_enriched_string (int attr, unsigned char *s, int do_color)
 	}
 	s++, n--;
       }
-      if (do_color) attrset(attr);
+      if (do_color) ATTRSET(attr);
     }
     else if ((k = mbrtowc (&wc, (char *)s, n, &mbstate)) > 0)
     {
@@ -166,7 +196,7 @@ static void menu_pad_string (char *s, size_t n)
 
 void menu_redraw_full (MUTTMENU *menu)
 {
-  SETCOLOR (MT_COLOR_NORMAL);
+  NORMAL_COLOR;
   /* clear() doesn't optimize screen redraws */
   move (0, 0);
   clrtobot ();
@@ -176,7 +206,7 @@ void menu_redraw_full (MUTTMENU *menu)
     SETCOLOR (MT_COLOR_STATUS);
     move (option (OPTSTATUSONTOP) ? LINES-2 : 0, 0);
     mutt_paddstr (COLS, menu->help);
-    SETCOLOR (MT_COLOR_NORMAL);
+    NORMAL_COLOR;
     menu->offset = 1;
     menu->pagelen = LINES - 3;
   }
@@ -199,7 +229,7 @@ void menu_redraw_status (MUTTMENU *menu)
   SETCOLOR (MT_COLOR_STATUS);
   move (option (OPTSTATUSONTOP) ? 0 : LINES - 2, 0);
   mutt_paddstr (COLS, buf);
-  SETCOLOR (MT_COLOR_NORMAL);
+  NORMAL_COLOR;
   menu->redraw &= ~REDRAW_STATUS;
 }
 
@@ -207,56 +237,47 @@ void menu_redraw_index (MUTTMENU *menu)
 {
   char buf[LONG_STRING];
   int i;
+  int do_color;
+  int attr;
 
   draw_sidebar(1);
   for (i = menu->top; i < menu->top + menu->pagelen; i++)
   {
     if (i < menu->max)
     {
+      attr = menu->color(i);
+
       menu_make_entry (buf, sizeof (buf), menu, i);
       menu_pad_string (buf, sizeof (buf));
 
-      if (option (OPTARROWCURSOR))
+      ATTRSET(attr);
+      move(i - menu->top + menu->offset, SidebarWidth);
+      do_color = 1;
+
+      if (i == menu->current)
       {
-        attrset (menu->color (i));
-	CLEARLINE_WIN (i - menu->top + menu->offset);
-
-	if (i == menu->current)
-	{
-          attrset (menu->color (i));
-	  ADDCOLOR (MT_COLOR_INDICATOR);
-	  addstr ("->");
-          attrset (menu->color (i));
-	  addch (' ');
-	}
-	else
-	{
-	  attrset (menu->color (i));
-	  addstr ("   ");
-	}
-
-        print_enriched_string (menu->color(i), (unsigned char *) buf, 1);
-        SETCOLOR (MT_COLOR_NORMAL);          
+	  SETCOLOR(MT_COLOR_INDICATOR);
+	  if (option(OPTARROWCURSOR))
+	  {
+	    addstr ("->");
+	    ATTRSET(attr);
+	    addch (' ');
+	  }
+	  else
+	    do_color = 0;
       }
-      else
-      {
-        attrset (menu->color (i));
-            
-	if (i == menu->current)
-	{
-	  ADDCOLOR (MT_COLOR_INDICATOR);
-	  BKGDSET (MT_COLOR_INDICATOR);
-	}
+      else if (option(OPTARROWCURSOR))
+	addstr("   ");
 
-	CLEARLINE_WIN (i - menu->top + menu->offset);
-	print_enriched_string (menu->color(i), (unsigned char *) buf, i != menu->current);
-        SETCOLOR (MT_COLOR_NORMAL);
-        BKGDSET (MT_COLOR_NORMAL);
-      }
+      print_enriched_string (attr, (unsigned char *) buf, do_color);
     }
     else
-      CLEARLINE_WIN (i - menu->top + menu->offset);
+    {
+      NORMAL_COLOR;
+      CLEARLINE_WIN(i - menu->top + menu->offset);
+    }
   }
+  NORMAL_COLOR;
   menu->redraw = 0;
 }
 
@@ -270,38 +291,30 @@ void menu_redraw_motion (MUTTMENU *menu)
     return;
   }
   
+
   move (menu->oldcurrent + menu->offset - menu->top, SidebarWidth);
-  SETCOLOR (MT_COLOR_NORMAL);
-  BKGDSET (MT_COLOR_NORMAL);
+  ATTRSET(menu->color (menu->oldcurrent));
 
   if (option (OPTARROWCURSOR))
   {
     /* clear the pointer */
-    attrset (menu->color (menu->oldcurrent));
     addstr ("  ");
 
     if (menu->redraw & REDRAW_MOTION_RESYNCH)
     {
-      clrtoeol ();
       menu_make_entry (buf, sizeof (buf), menu, menu->oldcurrent);
       menu_pad_string (buf, sizeof (buf));
       move (menu->oldcurrent + menu->offset - menu->top, SidebarWidth + 3);
       print_enriched_string (menu->color(menu->oldcurrent), (unsigned char *) buf, 1);
-      SETCOLOR (MT_COLOR_NORMAL);
     }
 
     /* now draw it in the new location */
-    move (menu->current + menu->offset - menu->top, SidebarWidth);
-    attrset (menu->color (menu->current));
-    ADDCOLOR (MT_COLOR_INDICATOR);
-    addstr ("->");
-    SETCOLOR (MT_COLOR_NORMAL);
+    SETCOLOR(MT_COLOR_INDICATOR);
+    mvaddstr(menu->current + menu->offset - menu->top, SidebarWidth, "->");
   }
   else
   {
     /* erase the current indicator */
-    attrset (menu->color (menu->oldcurrent));
-    clrtoeol ();
     menu_make_entry (buf, sizeof (buf), menu, menu->oldcurrent);
     menu_pad_string (buf, sizeof (buf));
     print_enriched_string (menu->color(menu->oldcurrent), (unsigned char *) buf, 1);
@@ -309,50 +322,36 @@ void menu_redraw_motion (MUTTMENU *menu)
     /* now draw the new one to reflect the change */
     menu_make_entry (buf, sizeof (buf), menu, menu->current);
     menu_pad_string (buf, sizeof (buf));
-    attrset (menu->color (menu->current));
-    ADDCOLOR (MT_COLOR_INDICATOR);
-    BKGDSET (MT_COLOR_INDICATOR);
-    CLEARLINE_WIN (menu->current - menu->top + menu->offset);
+    SETCOLOR(MT_COLOR_INDICATOR);
+    move(menu->current - menu->top + menu->offset, SidebarWidth);
     print_enriched_string (menu->color(menu->current), (unsigned char *) buf, 0);
-    SETCOLOR (MT_COLOR_NORMAL);
-    BKGDSET (MT_COLOR_NORMAL);
   }
   menu->redraw &= REDRAW_STATUS;
+  NORMAL_COLOR;
 }
 
 void menu_redraw_current (MUTTMENU *menu)
 {
   char buf[LONG_STRING];
+  int attr = menu->color (menu->current);
   
   move (menu->current + menu->offset - menu->top, SidebarWidth);
   menu_make_entry (buf, sizeof (buf), menu, menu->current);
   menu_pad_string (buf, sizeof (buf));
 
+  SETCOLOR(MT_COLOR_INDICATOR);
   if (option (OPTARROWCURSOR))
   {
-    int attr = menu->color (menu->current);
-    attrset (attr);
-    clrtoeol ();
-    attrset (menu->color (menu->current));
-    ADDCOLOR (MT_COLOR_INDICATOR);
     addstr ("->");
-    attrset (attr);
+    ATTRSET(attr);
     addch (' ');
     menu_pad_string (buf, sizeof (buf));
-    print_enriched_string (menu->color(menu->current), (unsigned char *) buf, 1);
-    SETCOLOR (MT_COLOR_NORMAL);
+    print_enriched_string (attr, (unsigned char *) buf, 1);
   }
   else
-  {
-    attrset (menu->color (menu->current));
-    ADDCOLOR (MT_COLOR_INDICATOR);
-    BKGDSET (MT_COLOR_INDICATOR);
-    clrtoeol ();
-    print_enriched_string (menu->color(menu->current), (unsigned char *) buf, 0);
-    SETCOLOR (MT_COLOR_NORMAL);
-    BKGDSET (MT_COLOR_NORMAL);
-  }
+    print_enriched_string (attr, (unsigned char *) buf, 0);
   menu->redraw &= REDRAW_STATUS;
+  NORMAL_COLOR;
 }
 
 static void menu_redraw_prompt (MUTTMENU *menu)
@@ -368,7 +367,6 @@ static void menu_redraw_prompt (MUTTMENU *menu)
     if (*Errorbuf)
       mutt_clear_error ();
 
-    SETCOLOR (MT_COLOR_NORMAL);
     mvaddstr (LINES - 1, 0, menu->prompt);
     clrtoeol ();
   }

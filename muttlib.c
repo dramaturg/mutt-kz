@@ -1121,10 +1121,10 @@ void mutt_FormatString (char *dest,		/* output buffer */
       srccopy[n-1] = '\0';
 
       /* prepare BUFFERs */
-      srcbuf = mutt_buffer_from(NULL, srccopy);
+      srcbuf = mutt_buffer_from (srccopy);
       srcbuf->dptr = srcbuf->data;
-      word = mutt_buffer_init(NULL);
-      command = mutt_buffer_init(NULL);
+      word = mutt_buffer_new ();
+      command = mutt_buffer_new ();
 
       /* Iterate expansions across successive arguments */
       do {
@@ -1709,28 +1709,22 @@ void mutt_sleep (short s)
   if (SleepTime > s)
     sleep (SleepTime);
   else if (s)
-    sleep (s);
+    sleep(s);
 }
 
-/*
- * Creates and initializes a BUFFER*. If passed an existing BUFFER*,
- * just initializes. Frees anything already in the buffer.
- *
- * Disregards the 'destroy' flag, which seems reserved for caller.
- * This is bad, but there's no apparent protocol for it.
- */
-BUFFER * mutt_buffer_init(BUFFER *b)
-{
-  if (!b)
-  {
-    b = safe_malloc(sizeof(BUFFER));
-    if (!b)
-      return NULL;
-  }
-  else
-  {
-    FREE(&b->data);
-  }
+/* creates and initializes a BUFFER */
+BUFFER *mutt_buffer_new(void) {
+  BUFFER *b;
+
+  b = safe_malloc(sizeof(BUFFER));
+
+  mutt_buffer_init(b);
+
+  return b;
+}
+
+/* initialize a new BUFFER */
+BUFFER *mutt_buffer_init (BUFFER *b) {
   memset(b, 0, sizeof(BUFFER));
   return b;
 }
@@ -1743,14 +1737,15 @@ BUFFER * mutt_buffer_init(BUFFER *b)
  * Disregards the 'destroy' flag, which seems reserved for caller.
  * This is bad, but there's no apparent protocol for it.
  */
-BUFFER * mutt_buffer_from(BUFFER *b, char *seed)
-{
+BUFFER *mutt_buffer_from (char *seed) {
+  BUFFER *b;
+
   if (!seed)
     return NULL;
 
-  b = mutt_buffer_init(b);
-  b->data = safe_strdup (seed);
-  b->dsize = mutt_strlen (seed);
+  b = mutt_buffer_new ();
+  b->data = safe_strdup(seed);
+  b->dsize = mutt_strlen(seed);
   b->dptr = (char *) b->data + b->dsize;
   return b;
 }

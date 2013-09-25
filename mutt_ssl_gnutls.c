@@ -238,7 +238,11 @@ err_crt:
   gnutls_x509_crt_deinit (clientcrt);
 }
 
-static int protocol_priority[] = {GNUTLS_TLS1, GNUTLS_SSL3, 0};
+/* This array needs to be large enough to hold all the possible values support
+ * by Mutt.  The initialized values are just placeholders--the array gets
+ * overwrriten in tls_negotiate() depending on the $ssl_use_* options.
+ */
+static int protocol_priority[] = {GNUTLS_TLS1_2, GNUTLS_TLS1_1, GNUTLS_TLS1, GNUTLS_SSL3, 0};
 
 /* tls_negotiate: After TLS state has been initialised, attempt to negotiate
  *   TLS over the wire, including certificate checks. */
@@ -246,6 +250,7 @@ static int tls_negotiate (CONNECTION * conn)
 {
   tlssockdata *data;
   int err;
+  size_t nproto = 0; /* number of tls/ssl protocols */
 
   data = (tlssockdata *) safe_calloc (1, sizeof (tlssockdata));
   conn->sockdata = data;
@@ -291,21 +296,21 @@ static int tls_negotiate (CONNECTION * conn)
   /* set socket */
   gnutls_transport_set_ptr (data->state, (gnutls_transport_ptr)conn->fd);
 
+  if (option(OPTTLSV1_2))
+    protocol_priority[nproto++] = GNUTLS_TLS1_2;
+  if (option(OPTTLSV1_1))
+    protocol_priority[nproto++] = GNUTLS_TLS1_1;
+  if (option(OPTTLSV1))
+    protocol_priority[nproto++] = GNUTLS_TLS1;
+  if (option(OPTSSLV3))
+    protocol_priority[nproto++] = GNUTLS_SSL3;
+  protocol_priority[nproto] = 0;
+
   /* disable TLS/SSL protocols as needed */
-  if (!option(OPTTLSV1) && !option(OPTSSLV3))
+  if (nproto == 0)
   {
     mutt_error (_("All available protocols for TLS/SSL connection disabled"));
     goto fail;
-  }
-  else if (!option(OPTTLSV1))
-  {
-    protocol_priority[0] = GNUTLS_SSL3;
-    protocol_priority[1] = 0;
-  }
-  else if (!option(OPTSSLV3))
-  {
-    protocol_priority[0] = GNUTLS_TLS1;
-    protocol_priority[1] = 0;
   }
   /*
   else
@@ -439,8 +444,16 @@ static int tls_compare_certificates (const gnutls_datum *peercert)
       return 0;
     }
 
-    ptr = (unsigned char *)strstr((char*)b64_data.data, CERT_SEP) + 1;
-    ptr = (unsigned char *)strstr((char*)ptr, CERT_SEP);
+    /* find start of cert, skipping junk */
+    ptr = (unsigned char *)strstr((char*)b64_data.data, CERT_SEP);
+    if (!ptr)
+    {
+      gnutls_free(cert.data);
+      FREE (&b64_data_data);
+      return 0;
+    }
+    /* find start of next cert */
+    ptr = (unsigned char *)strstr((char*)ptr + 1, CERT_SEP);
 
     b64_data.size = b64_data.size - (ptr - b64_data.data);
     b64_data.data = ptr;
@@ -596,21 +609,21 @@ static int tls_check_preauth (const gnutls_datum_t *certdata,
   {
     *savedcert = 1;
 
-    if (chainidx == 0 && certstat & GNUTLS_CERT_INVALID)
+    if (chainidx == 0 && (certstat & GNUTLS_CERT_INVALID))
     {
       /* doesn't matter - have decided is valid because server
        certificate is in our trusted cache */
       certstat ^= GNUTLS_CERT_INVALID;
     }
 
-    if (chainidx == 0 && certstat & GNUTLS_CERT_SIGNER_NOT_FOUND)
+    if (chainidx == 0 && (certstat & GNUTLS_CERT_SIGNER_NOT_FOUND))
     {
       /* doesn't matter that we haven't found the signer, since
        certificate is in our trusted cache */
       certstat ^= GNUTLS_CERT_SIGNER_NOT_FOUND;
     }
 
-    if (chainidx <= 1 && certstat & GNUTLS_CERT_SIGNER_NOT_CA)
+    if (chainidx <= 1 && (certstat & GNUTLS_CERT_SIGNER_NOT_CA))
     {
       /* Hmm. Not really sure how to handle this, but let's say
        that we don't care if the CA certificate hasn't got the
@@ -619,7 +632,7 @@ static int tls_check_preauth (const gnutls_datum_t *certdata,
       certstat ^= GNUTLS_CERT_SIGNER_NOT_CA;
     }
 
-    if (chainidx == 0 && certstat & GNUTLS_CERT_INSECURE_ALGORITHM)
+    if (chainidx == 0 && (certstat & GNUTLS_CERT_INSECURE_ALGORITHM))
     {
       /* doesn't matter that it was signed using an insecure
          algorithm, since certificate is in our trusted cache */
@@ -984,6 +997,7 @@ static int tls_check_certificate (CONNECTION* conn)
   unsigned int cert_list_size = 0;
   gnutls_certificate_status certstat;
   int certerr, i, preauthrc, savedcert, rc = 0;
+  int rcpeer = -1; /* the result of tls_check_preauth() on the peer's EE cert */
 
   if (gnutls_auth_get_type (state) != GNUTLS_CRD_CERTIFICATE)
   {
@@ -1010,6 +1024,13 @@ static int tls_check_certificate (CONNECTION* conn)
     rc = tls_check_preauth(&cert_list[i], certstat, conn->account.host, i,
                            &certerr, &savedcert);
     preauthrc += rc;
+    if (i == 0)
+    {
+      /* This is the peer's end-entity X.509 certificate.  Stash the result
+       * to check later in this function.
+       */
+      rcpeer = rc;
+    }
 
     if (savedcert)
     {
@@ -1034,7 +1055,10 @@ static int tls_check_certificate (CONNECTION* conn)
         dprint (1, (debugfile, "error trusting certificate %d: %d\n", i, rc));
 
       certstat = tls_verify_peers (state);
-      if (!certstat)
+      /* If the cert chain now verifies, and the peer's cert was otherwise
+       * valid (rcpeer==0), we are done.
+       */
+      if (!certstat && !rcpeer)
         return 1;
     }
   }

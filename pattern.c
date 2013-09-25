@@ -42,6 +42,10 @@
 #include "imap/imap.h"
 #endif
 
+#ifdef USE_NOTMUCH
+#include "mutt_notmuch.h"
+#endif
+
 static int eat_regexp (pattern_t *pat, BUFFER *, BUFFER *);
 static int eat_date (pattern_t *pat, BUFFER *, BUFFER *);
 static int eat_range (pattern_t *pat, BUFFER *, BUFFER *);
@@ -95,6 +99,9 @@ Flags[] =
   { 'x', M_REFERENCE,		0,		eat_regexp },
   { 'X', M_MIMEATTACH,		0,		eat_range },
   { 'y', M_XLABEL,		0,		eat_regexp },
+#ifdef USE_NOTMUCH
+  { 'Y', M_NOTMUCH_LABEL,	0,		eat_regexp },
+#endif
   { 'z', M_SIZE,		0,		eat_range },
   { '=', M_DUPLICATED,		0,		NULL },
   { '$', M_UNREFERENCED,	0,		NULL },
@@ -1201,6 +1208,13 @@ mutt_pattern_exec (struct pattern_t *pat, pattern_exec_flag flags, CONTEXT *ctx,
      return (pat->not ^ ((h->security & APPLICATION_PGP) && (h->security & PGPKEY)));
     case M_XLABEL:
       return (pat->not ^ (h->env->x_label && patmatch (pat, h->env->x_label) == 0));
+#ifdef USE_NOTMUCH
+    case M_NOTMUCH_LABEL:
+      {
+      char *tags = nm_header_get_tags(h);
+      return (pat->not ^ (tags && patmatch (pat, tags) == 0));
+      }
+#endif
     case M_HORMEL:
       return (pat->not ^ (h->env->spam && h->env->spam->data && patmatch (pat, h->env->spam->data) == 0));
     case M_DUPLICATED:
@@ -1288,7 +1302,7 @@ void mutt_check_simple (char *s, size_t len, const char *simple)
 int mutt_pattern_func (int op, char *prompt)
 {
   pattern_t *pat;
-  char buf[LONG_STRING] = "", *simple, error[STRING];
+  char buf[LONG_STRING] = "", *simple;
   BUFFER err;
   int i;
   progress_t progress;
@@ -1303,12 +1317,13 @@ int mutt_pattern_func (int op, char *prompt)
   mutt_check_simple (buf, sizeof (buf), NONULL (SimpleSearch));
 
   memset (&err, 0, sizeof(err));
-  err.data = error;
-  err.dsize = sizeof (error);
+  err.dsize = STRING;
+  err.data = safe_malloc(err.dsize);
   if ((pat = mutt_pattern_comp (buf, M_FULL_MSG, &err)) == NULL)
   {
     FREE (&simple);
     mutt_error ("%s", err.data);
+    FREE (&err.data);
     return (-1);
   }
 
@@ -1396,6 +1411,8 @@ int mutt_pattern_func (int op, char *prompt)
   }
   FREE (&simple);
   mutt_pattern_free (&pat);
+  FREE (&err.data);
+
   return 0;
 }
 
@@ -1404,7 +1421,6 @@ int mutt_search_command (int cur, int op)
   int i, j;
   char buf[STRING];
   char temp[LONG_STRING];
-  char error[STRING];
   int incr;
   HEADER *h;
   progress_t progress;
@@ -1437,11 +1453,12 @@ int mutt_search_command (int cur, int op)
       strfcpy (LastSearch, buf, sizeof (LastSearch));
       mutt_message _("Compiling search pattern...");
       mutt_pattern_free (&SearchPattern);
-      err.data = error;
-      err.dsize = sizeof (error);
+      err.dsize = STRING;
+      err.data = safe_malloc (err.dsize);
       if ((SearchPattern = mutt_pattern_comp (temp, M_FULL_MSG, &err)) == NULL)
       {
-	mutt_error ("%s", error);
+	mutt_error ("%s", err.data);
+	FREE (&err.data);
 	LastSearch[0] = '\0';
 	return (-1);
       }

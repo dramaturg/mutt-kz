@@ -635,13 +635,11 @@ int mutt_index_menu (void)
         DrawFullLine = 1;
 	menu_status_line (buf, sizeof (buf), menu, NONULL (Status));
         DrawFullLine = 0;
-	CLEARLINE (option (OPTSTATUSONTOP) ? 0 : LINES-2);
+	move (option (OPTSTATUSONTOP) ? 0 : LINES-2, 0);
 	SETCOLOR (MT_COLOR_STATUS);
-        BKGDSET (MT_COLOR_STATUS);
         set_buffystats(Context);
 	mutt_paddstr (COLS, buf);
-	SETCOLOR (MT_COLOR_NORMAL);
-        BKGDSET (MT_COLOR_NORMAL);
+	NORMAL_COLOR;
 	menu->redraw &= ~REDRAW_STATUS;
       }
 
@@ -1099,7 +1097,6 @@ int mutt_index_menu (void)
 	  break;
 
 	CHECK_MSGCOUNT;
-        CHECK_VISIBLE;
 	CHECK_READONLY;
 	{
 	  int oldvcount = Context->vcount;
@@ -1107,15 +1104,19 @@ int mutt_index_menu (void)
 	  int check, newidx;
 	  HEADER *newhdr = NULL;
 
-	  /* threads may be reordered, so figure out what header the cursor
-	   * should be on. #3092 */
-	  newidx = menu->current;
-	  if (CURHDR->deleted)
-	    newidx = ci_next_undeleted (menu->current);
-	  if (newidx < 0)
-	    newidx = ci_previous_undeleted (menu->current);
-	  if (newidx >= 0)
-	    newhdr = Context->hdrs[Context->v2r[newidx]];
+	  /* don't attempt to move the cursor if there are no visible messages in the current limit */
+	  if (menu->current < Context->vcount)
+	  {
+	    /* threads may be reordered, so figure out what header the cursor
+	     * should be on. #3092 */
+	    newidx = menu->current;
+	    if (CURHDR->deleted)
+	      newidx = ci_next_undeleted (menu->current);
+	    if (newidx < 0)
+	      newidx = ci_previous_undeleted (menu->current);
+	    if (newidx >= 0)
+	      newhdr = Context->hdrs[Context->v2r[newidx]];
+	  }
 
 	  if ((check = mx_sync_mailbox (Context, &index_hint)) == 0)
 	  {
@@ -1156,7 +1157,7 @@ int mutt_index_menu (void)
 	break;
 
       case OP_MAIN_QUASI_DELETE:
-	if (tag && !option (OPTAUTOTAG))
+	if (tag)
 	{
 	  for (j = 0; j < Context->vcount; j++) {
 	    if (Context->hdrs[Context->v2r[j]]->tagged) {
@@ -1183,12 +1184,12 @@ int mutt_index_menu (void)
 	CHECK_MSGCOUNT;
         CHECK_VISIBLE;
 	*buf = '\0';
-	if (mutt_get_field ("Add/remove labels: ", buf, sizeof (buf), 0) || !*buf)
+	if (mutt_get_field ("Add/remove labels: ", buf, sizeof (buf), M_NM_TAG) || !*buf)
 	{
           mutt_message _("No label specified, aborting.");
           break;
         }
-	if (tag && !option (OPTAUTOTAG))
+	if (tag)
 	{
 	  char msgbuf[STRING];
 	  progress_t progress;
@@ -1245,7 +1246,7 @@ int mutt_index_menu (void)
 
       case OP_MAIN_VFOLDER_FROM_QUERY:
 	buf[0] = '\0';
-        if (mutt_get_field ("Query: ", buf, sizeof (buf), 0) != 0 || !buf[0])
+        if (mutt_get_field ("Query: ", buf, sizeof (buf), M_NM_QUERY) != 0 || !buf[0])
         {
           mutt_message _("No query, aborting.");
           break;

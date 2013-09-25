@@ -27,7 +27,6 @@
 #include "url.h"
 #include "imap_private.h"
 #ifdef USE_HCACHE
-#include "message.h"
 #include "hcache.h"
 #endif
 
@@ -146,7 +145,7 @@ int imap_hcache_put (IMAP_DATA* idata, HEADER* h)
 
   sprintf (key, "/%u", HEADER_DATA (h)->uid);
   return mutt_hcache_store (idata->hcache, key, h, idata->uid_validity,
-                            imap_hcache_keylen);
+                            imap_hcache_keylen, 0);
 }
 
 int imap_hcache_del (IMAP_DATA* idata, unsigned int uid)
@@ -374,7 +373,7 @@ IMAP_DATA* imap_new_idata (void)
   if (!idata)
     return NULL;
 
-  if (!(idata->cmdbuf = mutt_buffer_init (NULL)))
+  if (!(idata->cmdbuf = mutt_buffer_new ()))
     FREE (&idata);
 
   idata->cmdslots = ImapPipelineDepth + 2;
@@ -734,7 +733,7 @@ int imap_wordcasecmp(const char *a, const char *b)
  *
  */
 
-static RETSIGTYPE alrm_handler (int sig)
+static void alrm_handler (int sig)
 {
   /* empty */
 }

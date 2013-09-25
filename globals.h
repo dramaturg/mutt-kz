@@ -152,6 +152,9 @@ WHERE const char *ReleaseDate;
 
 WHERE HASH *Groups;
 WHERE HASH *ReverseAlias;
+#ifdef USE_NOTMUCH
+WHERE HASH *TagTransforms;
+#endif
 
 WHERE LIST *AutoViewList INITVAL(0);
 WHERE LIST *AlternativeOrderList INITVAL(0);
@@ -275,6 +278,9 @@ WHERE char *NotmuchDefaultUri;
 WHERE char *NotmuchUnreadTag;
 WHERE char *NotmuchHiddenTags;
 WHERE char *VirtFolderFormat;
+WHERE int NotmuchDBLimit;
+WHERE char *NotmuchQueryType;
+WHERE char *NotmuchRecordTags;
 #endif
 
 

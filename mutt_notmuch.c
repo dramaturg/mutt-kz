@@ -13,7 +13,7 @@
  *   (it's implemented in get_ctxdata() and init_context() functions).
  *
  * - exception are nm_nonctx_* functions -- these functions use nm_default_uri
- *   (or parse URI from another resourse)
+ *   (or parse URI from another resource)
  */
 #if HAVE_CONFIG_H
 # include "config.h"
@@ -45,7 +45,7 @@
 #include "mutt_notmuch.h"
 #include "mutt_curses.h"
 
-/* read whole-thread or maching messages only? */
+/* read whole-thread or matching messages only? */
 enum {
 	NM_QUERY_TYPE_MESGS = 0,	/* default */
 	NM_QUERY_TYPE_THREADS
@@ -66,6 +66,7 @@ struct uri_tag {
 struct nm_hdrdata {
 	char *folder;
 	char *tags;
+	char *tags_transformed;
 	char *oldpath;
 	int magic;
 };
@@ -83,6 +84,7 @@ struct nm_ctxdata {
 	int longrun;
 
 	struct uri_tag *query_items;
+	progress_t *progress;
 };
 
 static void url_free_tags(struct uri_tag *tags)
@@ -175,6 +177,7 @@ static void free_hdrdata(struct nm_hdrdata *data)
 	dprint(2, (debugfile, "nm: freeing header %p\n", data));
 	FREE(&data->folder);
 	FREE(&data->tags);
+	FREE(&data->tags_transformed);
 	FREE(&data->oldpath);
 	FREE(&data);
 }
@@ -209,6 +212,8 @@ static struct nm_ctxdata *new_ctxdata(char *uri)
 
 	data = safe_calloc(1, sizeof(struct nm_ctxdata));
 	dprint(1, (debugfile, "nm: initialize context data %p\n", data));
+
+	data->db_limit = NotmuchDBLimit;
 
 	if (url_parse_query(uri, &data->db_filename, &data->query_items)) {
 		mutt_error(_("failed to parse notmuch uri: %s"), uri);
@@ -268,6 +273,11 @@ char *nm_header_get_tags(HEADER *h)
 	return h && h->data ? ((struct nm_hdrdata *) h->data)->tags : NULL;
 }
 
+char *nm_header_get_tags_transformed(HEADER *h)
+{
+	return h && h->data ? ((struct nm_hdrdata *) h->data)->tags_transformed : NULL;
+}
+
 int nm_header_get_magic(HEADER *h)
 {
 	return h && h->data ? ((struct nm_hdrdata *) h->data)->magic : 0;
@@ -306,6 +316,22 @@ static struct nm_ctxdata *get_ctxdata(CONTEXT *ctx)
 	return NULL;
 }
 
+static int string_to_guery_type(const char *str)
+{
+	if (!str)
+		str = NotmuchQueryType;		/* user's default */
+	if (!str)
+		return NM_QUERY_TYPE_MESGS;	/* hardcoded default */
+
+	if (strcmp(str, "threads") == 0)
+		return NM_QUERY_TYPE_THREADS;
+	else if (strcmp(str, "messages") == 0)
+		return NM_QUERY_TYPE_MESGS;
+
+	mutt_error (_("failed to parse notmuch query type: %s"), str);
+	return NM_QUERY_TYPE_MESGS;
+}
+
 static char *get_query_string(struct nm_ctxdata *data)
 {
 	struct uri_tag *item;
@@ -323,17 +349,15 @@ static char *get_query_string(struct nm_ctxdata *data)
 			if (mutt_atoi(item->value, &data->db_limit))
 				mutt_error (_("failed to parse notmuch limit: %s"), item->value);
 
-		} else if (strcmp(item->name, "type") == 0) {
-			if (strcmp(item->value, "threads") == 0)
-				data->query_type = NM_QUERY_TYPE_THREADS;
-			else if (strcmp(item->value, "messages") == 0)
-				data->query_type = NM_QUERY_TYPE_MESGS;
-			else
-				mutt_error (_("failed to parse notmuch query type: %s"), item->value);
+		} else if (strcmp(item->name, "type") == 0)
+			data->query_type = string_to_guery_type(item->value);
 
-		} else if (strcmp(item->name, "query") == 0)
+		else if (strcmp(item->name, "query") == 0)
 			data->db_query = safe_strdup(item->value);
 	}
+
+	if (!data->query_type)
+		data->query_type = string_to_guery_type(NULL);
 
 	dprint(2, (debugfile, "nm: query '%s'\n", data->db_query));
 
@@ -452,7 +476,7 @@ void nm_longrun_init(CONTEXT *ctx, int writable)
 
 	if (data && get_db(data, writable)) {
 		data->longrun = TRUE;
-		dprint(2, (debugfile, "nm: long run initialied\n"));
+		dprint(2, (debugfile, "nm: long run initialized\n"));
 	}
 }
 
@@ -461,7 +485,7 @@ void nm_longrun_done(CONTEXT *ctx)
 	struct nm_ctxdata *data = get_ctxdata(ctx);
 
 	if (data && release_db(data) == 0)
-		dprint(2, (debugfile, "nm: long run deinitialied\n"));
+		dprint(2, (debugfile, "nm: long run deinitialized\n"));
 }
 
 static int is_longrun(struct nm_ctxdata *data)
@@ -522,7 +546,7 @@ static notmuch_query_t *get_query(struct nm_ctxdata *data, int writable)
 		goto err;
 
 	notmuch_query_set_sort(q, NOTMUCH_SORT_NEWEST_FIRST);
-	dprint(2, (debugfile, "nm: query succesfully initialized\n"));
+	dprint(2, (debugfile, "nm: query successfully initialized\n"));
 	return q;
 err:
 	if (!is_longrun(data))
@@ -535,8 +559,8 @@ static int update_header_tags(HEADER *h, notmuch_message_t *msg)
 {
 	struct nm_hdrdata *data = h->data;
 	notmuch_tags_t *tags;
-	char *tstr = NULL, *p;
-	size_t sz = 0;
+	char *tstr = NULL, *ttstr = NULL, *p;
+	size_t sz = 0, tsz = 0;
 
 	dprint(2, (debugfile, "nm: tags update requested (%s)\n", h->env->message_id));
 
@@ -546,6 +570,8 @@ static int update_header_tags(HEADER *h, notmuch_message_t *msg)
 
 		const char *t = notmuch_tags_get(tags);
 		size_t xsz = t ? strlen(t) : 0;
+		const char *tt = NULL;
+		size_t txsz = 0;
 
 		if (!xsz)
 			continue;
@@ -562,6 +588,26 @@ static int update_header_tags(HEADER *h, notmuch_message_t *msg)
 				continue;
 		}
 
+		tt = hash_find(TagTransforms, t);
+
+		if (tt) {
+			txsz = strlen(tt);
+		} else {
+			tt = t;
+			txsz = xsz;
+		}
+
+		/* expand the transformed tag string */
+		safe_realloc(&ttstr, tsz + (tsz ? 1 : 0) + txsz + 1);
+		p = ttstr + tsz;
+		if (tsz) {
+		    *p++ = ' ';
+		    tsz++;
+		}
+		memcpy(p, tt, txsz + 1);
+		tsz += txsz;
+
+		/* expand the un-transformed tag string */
 		safe_realloc(&tstr, sz + (sz ? 1 : 0) + xsz + 1);
 		p = tstr + sz;
 		if (sz) {
@@ -574,6 +620,7 @@ static int update_header_tags(HEADER *h, notmuch_message_t *msg)
 
 	if (data->tags && tstr && strcmp(data->tags, tstr) == 0) {
 		FREE(&tstr);
+		FREE(&ttstr);
 		dprint(2, (debugfile, "nm: tags unchanged\n"));
 		return 1;
 	}
@@ -581,11 +628,13 @@ static int update_header_tags(HEADER *h, notmuch_message_t *msg)
 	FREE(&data->tags);
 	data->tags = tstr;
 	dprint(2, (debugfile, "nm: new tags: '%s'\n", tstr));
+	data->tags_transformed = ttstr;
+	dprint(2, (debugfile, "nm: new tag transforms: '%s'\n", ttstr));
 	return 0;
 }
 
 /*
- * set/update HEADE->path and HEADER->data->path
+ * set/update HEADER->path and HEADER->data->path
  */
 static int update_message_path(HEADER *h, const char *path)
 {
@@ -789,6 +838,8 @@ static void append_replies(CONTEXT *ctx, notmuch_message_t *top)
 
 		notmuch_message_t *m = notmuch_messages_get(msgs);
 		append_message(ctx, m);
+		if (!ctx->quiet)
+		  mutt_progress_update (get_ctxdata(ctx)->progress, ctx->msgcount, -1);
 		/* recurse through all the replies to this message too */
 		append_replies(ctx, m);
 		notmuch_message_destroy(m);
@@ -809,6 +860,8 @@ static void append_thread(CONTEXT *ctx, notmuch_thread_t *thread)
 
 		notmuch_message_t *m = notmuch_messages_get(msgs);
 		append_message(ctx, m);
+		if (!ctx->quiet)
+		  mutt_progress_update (get_ctxdata(ctx)->progress, ctx->msgcount, -1);
 		append_replies(ctx, m);
 		notmuch_message_destroy(m);
 	}
@@ -832,6 +885,8 @@ static void read_mesgs_query(CONTEXT *ctx, notmuch_query_t *q)
 
 		notmuch_message_t *m = notmuch_messages_get(msgs);
 		append_message(ctx, m);
+		if (!ctx->quiet)
+		  mutt_progress_update (get_ctxdata(ctx)->progress, ctx->msgcount, -1);
 		notmuch_message_destroy(m);
 	}
 }
@@ -877,6 +932,18 @@ int nm_read_query(CONTEXT *ctx)
 	q = get_query(data, FALSE);
 	if (q) {
 		int type = get_query_type(data);
+		char msgbuf[STRING];
+		progress_t progress;
+
+		if (!ctx->quiet) {
+			unsigned ct = notmuch_query_count_messages(q);
+
+			data->progress = &progress;
+			snprintf (msgbuf, sizeof(msgbuf),
+					_("Reading %s..."), ctx->path);
+			mutt_progress_init(data->progress, msgbuf,
+					M_PROGRESS_MSG, ReadInc, ct);
+		}
 
 		switch(type) {
 		case NM_QUERY_TYPE_MESGS:
@@ -1073,7 +1140,7 @@ static int remove_filename(notmuch_database_t *db, const char *path)
 		return -1;
 
 	/*
-	 * note that unlink() is probably unecessary here, it's already removed
+	 * note that unlink() is probably unnecessary here, it's already removed
 	 * by mh_sync_mailbox_message(), but for sure...
 	 */
 	st = notmuch_database_remove_message(db, path);
@@ -1354,7 +1421,11 @@ int nm_nonctx_get_count(char *path, int *all, int *new)
 	rc = 0;
 done:
 	if (db) {
+#ifdef NOTMUCH_API_3
+		notmuch_database_destroy(db);
+#else
 		notmuch_database_close(db);
+#endif
 		dprint(1, (debugfile, "nm: count close DB\n"));
 	}
 	if (!dflt)
@@ -1453,6 +1524,7 @@ int nm_check_database(CONTEXT *ctx, int *index_hint)
 		if (!h) {
 			/* new email */
 			append_message(ctx, m);
+			notmuch_message_destroy(m);
 			continue;
 		}
 
@@ -1481,6 +1553,8 @@ int nm_check_database(CONTEXT *ctx, int *index_hint)
 
 		if (update_header_tags(h, m) == 0)
 			new_flags++;
+
+		notmuch_message_destroy(m);
 	}
 
 	for (i = 0; i < ctx->msgcount; i++) {
@@ -1493,6 +1567,9 @@ int nm_check_database(CONTEXT *ctx, int *index_hint)
 	if (ctx->msgcount > oldmsgcount)
 		mx_update_context(ctx, ctx->msgcount - oldmsgcount);
 done:
+	if (q)
+		notmuch_query_destroy(q);
+
 	if (!is_longrun(data))
 		release_db(data);
 
@@ -1504,4 +1581,93 @@ done:
 	return occult ? M_REOPENED :
 	       ctx->msgcount > oldmsgcount ? M_NEW_MAIL :
 	       new_flags ? M_FLAGS : 0;
+}
+
+int nm_record_message(CONTEXT *ctx, char *path, HEADER *h)
+{
+	notmuch_database_t *db;
+	notmuch_status_t st;
+	notmuch_message_t *msg;
+	int rc = -1;
+	struct nm_ctxdata *data = get_ctxdata(ctx);
+
+	if (!path || !data || access(path, F_OK) != 0)
+		return 0;
+	db = get_db(data, TRUE);
+	if (!db)
+		return -1;
+
+	dprint(1, (debugfile, "nm: record message: %s\n", path));
+	st = notmuch_database_begin_atomic(db);
+	if (st)
+		return -1;
+
+	st = notmuch_database_add_message(db, path, &msg);
+
+	if (st != NOTMUCH_STATUS_SUCCESS &&
+	    st != NOTMUCH_STATUS_DUPLICATE_MESSAGE_ID) {
+		dprint(1, (debugfile, "nm: failed to add '%s' [st=%d]\n", path, (int) st));
+		goto done;
+	}
+
+	if (st == NOTMUCH_STATUS_SUCCESS && msg) {
+		notmuch_message_maildir_flags_to_tags(msg);
+		if (h)
+			update_tags(msg, nm_header_get_tags(h));
+		if (NotmuchRecordTags)
+			update_tags(msg, NotmuchRecordTags);
+	}
+
+	rc = 0;
+done:
+	if (msg)
+		notmuch_message_destroy(msg);
+	notmuch_database_end_atomic(db);
+
+	if (!is_longrun(data))
+		release_db(data);
+	return rc;
+}
+
+/*
+ * Fill a list with all notmuch tags.
+ *
+ * If tag_list is NULL, just count the tags.
+ */
+int nm_get_all_tags(CONTEXT *ctx, char **tag_list, int *tag_count)
+{
+	struct nm_ctxdata *data = get_ctxdata(ctx);
+	notmuch_database_t *db = NULL;
+	notmuch_tags_t *tags = NULL;
+	int rc = -1;
+
+	if (!data)
+		return -1;
+
+	if (!(db = get_db(data, FALSE)) ||
+			!(tags = notmuch_database_get_all_tags(db)))
+		goto done;
+
+	*tag_count = 0;
+	dprint(1, (debugfile, "nm: get all tags\n"));
+
+	while (notmuch_tags_valid(tags)) {
+		if (tag_list != NULL) {
+			tag_list[*tag_count] = safe_strdup(notmuch_tags_get(tags));
+		}
+		(*tag_count)++;
+		notmuch_tags_move_to_next(tags);
+	}
+
+	rc = 0;
+done:
+	if (tags)
+		notmuch_tags_destroy(tags);
+
+	if (!is_longrun(data))
+		release_db(data);
+
+	dprint(1, (debugfile, "nm: get all tags done [rc=%d tag_count=%u]\n", rc,
+						 *tag_count));
+	return rc;
 }

@@ -32,6 +32,7 @@
 #include <unistd.h>
 #include <ctype.h>
 #include <netdb.h>
+#include <errno.h>
 
 /* given an POP mailbox name, return host, port, username and password */
 int pop_parse_path (const char* path, ACCOUNT* acct)
@@ -82,8 +83,7 @@ void pop_error (POP_DATA *pop_data, char *msg)
 
   if (!mutt_strncmp (msg, "-ERR ", 5))
   {
-    c2 = msg + 5;
-    SKIPWS (c2);
+    c2 = skip_email_wsp(msg + 5);
 
     if (*c2)
       c = c2;
@@ -102,8 +102,7 @@ static int fetch_capa (char *line, void *data)
   if (!ascii_strncasecmp (line, "SASL", 4))
   {
     FREE (&pop_data->auth_list);
-    c = line + 4;
-    SKIPWS (c);
+    c = skip_email_wsp(line + 4);
     pop_data->auth_list = safe_strdup (c);
   }
 
@@ -525,8 +524,16 @@ static int check_uidl (char *line, void *data)
   int i;
   unsigned int index;
   CONTEXT *ctx = (CONTEXT *)data;
+  char *endp;
 
-  sscanf (line, "%u %s", &index, line);
+  errno = 0;
+  index = strtoul(line, &endp, 10);
+  if (errno)
+      return -1;
+  while (*endp == ' ')
+      endp++;
+  memmove(line, endp, strlen(endp) + 1);
+
   for (i = 0; i < ctx->msgcount; i++)
   {
     if (!mutt_strcmp (ctx->hdrs[i]->data, line))

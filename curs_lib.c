@@ -195,6 +195,7 @@ int mutt_yesorno (const char *msg, int def)
   char *no = _("no");
   char *answer_string;
   size_t answer_string_len;
+  size_t msglen;
 
 #ifdef HAVE_LANGINFO_YESEXPR
   char *expr;
@@ -220,10 +221,12 @@ int mutt_yesorno (const char *msg, int def)
    * ensure there is enough room for the answer and truncate the question
    * to fit.
    */
-  answer_string = safe_malloc (COLS + 1);
-  snprintf (answer_string, COLS + 1, " ([%s]/%s): ", def == M_YES ? yes : no, def == M_YES ? no : yes);
-  answer_string_len = strlen (answer_string);
-  mutt_message ("%.*s%s", COLS - answer_string_len, msg, answer_string);
+  safe_asprintf (&answer_string, " ([%s]/%s): ", def == M_YES ? yes : no, def == M_YES ? no : yes);
+  answer_string_len = mutt_strwidth (answer_string);
+  /* maxlen here is sort of arbitrary, so pick a reasonable upper bound */
+  msglen = mutt_wstr_trunc (msg, 4*COLS, COLS - answer_string_len, NULL);
+  addnstr (msg, msglen);
+  addstr (answer_string);
   FREE (&answer_string);
 
   FOREVER
@@ -320,8 +323,8 @@ static void curses_message (int error, const char *fmt, va_list ap)
       BEEP ();
     SETCOLOR (error ? MT_COLOR_ERROR : MT_COLOR_MESSAGE);
     mvaddstr (LINES-1, 0, Errorbuf);
+    NORMAL_COLOR;
     clrtoeol ();
-    SETCOLOR (MT_COLOR_NORMAL);
     mutt_refresh ();
   }
 
@@ -390,6 +393,52 @@ void mutt_progress_init (progress_t* progress, const char *msg,
   mutt_progress_update (progress, 0, 0);
 }
 
+static void message_bar (int percent, const char *fmt, ...)
+{
+  va_list ap;
+  char buf[STRING], buf2[STRING];
+  int w = percent * COLS / 100;
+  size_t l;
+
+  va_start (ap, fmt);
+  vsnprintf (buf, sizeof (buf), fmt, ap);
+  l = mutt_strwidth (buf);
+  va_end (ap);
+
+  mutt_format_string(buf2, sizeof (buf2),
+    0, COLS-2, FMT_LEFT, 0, buf, sizeof (buf), 0);
+
+  move (LINES - 1, 0);
+
+  if (l < w)
+  {
+    SETCOLOR(MT_COLOR_PROGRESS);
+    addstr (buf2);
+    w -= l;
+    while (w--)
+      addch(' ');
+    SETCOLOR(MT_COLOR_NORMAL);
+    clrtoeol ();
+    mutt_refresh();
+  }
+  else
+  {
+    size_t bw;
+    char ch;
+    int off = mutt_wstr_trunc (buf2, sizeof (buf2), w, &bw);
+
+    ch = buf2[off];
+    buf2[off] = 0;
+    SETCOLOR(MT_COLOR_PROGRESS);
+    addstr (buf2);
+    buf2[off] = ch;
+    SETCOLOR(MT_COLOR_NORMAL);
+    addstr (&buf2[off]);
+    clrtoeol ();
+    mutt_refresh();
+  }
+}
+
 void mutt_progress_update (progress_t* progress, long pos, int percent)
 {
   char posstr[SHORT_STRING];
@@ -440,16 +489,16 @@ void mutt_progress_update (progress_t* progress, long pos, int percent)
 
     if (progress->size > 0)
     {
-      mutt_message ("%s %s/%s (%d%%)", progress->msg, posstr, progress->sizestr,
-		    percent > 0 ? percent :
-		   	(int) (100.0 * (double) progress->pos / progress->size));
+      message_bar (percent > 0 ? percent : (int) (100.0 * (double) progress->pos / progress->size),
+        "%s %s/%s (%d%%)", progress->msg, posstr, progress->sizestr,
+        percent > 0 ? percent : (int) (100.0 * (double) progress->pos / progress->size));
     }
     else
     {
       if (percent > 0)
-	mutt_message ("%s %s (%d%%)", progress->msg, posstr, percent);
+        message_bar (percent, "%s %s (%d%%)", progress->msg, posstr, percent);
       else
-	mutt_message ("%s %s", progress->msg, posstr);
+        mutt_message ("%s %s", progress->msg, posstr);
     }
   }
 
@@ -464,9 +513,9 @@ void mutt_show_error (void)
     return;
   
   SETCOLOR (option (OPTMSGERR) ? MT_COLOR_ERROR : MT_COLOR_MESSAGE);
-  CLEARLINE (LINES-1);
-  addstr (Errorbuf);
-  SETCOLOR (MT_COLOR_NORMAL);
+  mvaddstr(LINES-1, 0, Errorbuf);
+  NORMAL_COLOR;
+  clrtoeol();
 }
 
 void mutt_endwin (const char *msg)
@@ -475,10 +524,10 @@ void mutt_endwin (const char *msg)
 
   if (!option (OPTNOCURSES))
   {
-    CLEARLINE (LINES - 1);
-    
-    attrset (A_NORMAL);
-    mutt_refresh ();
+    /* at least in some situations (screen + xterm under SuSE11/12) endwin()
+     * doesn't properly flush the screen without an explicit call.
+     */
+    mutt_refresh();
     endwin ();
   }
   

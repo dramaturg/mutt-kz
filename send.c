@@ -48,6 +48,9 @@
 #include "remailer.h"
 #endif
 
+#ifdef USE_NOTMUCH
+#include "mutt_notmuch.h"
+#endif
 
 static void append_signature (FILE *f)
 {
@@ -234,15 +237,14 @@ static int edit_envelope (ENVELOPE *en)
   }
   else
   {
-    char *p;
+    const char *p;
 
     buf[0] = 0;
     for (; uh; uh = uh->next)
     {
       if (ascii_strncasecmp ("subject:", uh->data, 8) == 0)
       {
-	p = uh->data + 8;
-	SKIPWS (p);
+	p = skip_email_wsp(uh->data + 8);
 	strncpy (buf, p, sizeof (buf));
       }
     }
@@ -1135,6 +1137,7 @@ ci_send_message (int flags,		/* send mode */
   char *signas = NULL;
   char *tag = NULL, *err = NULL;
   char *ctype;
+  char *finalpath = NULL;
 
   int rv = -1;
   
@@ -1206,8 +1209,6 @@ ci_send_message (int flags,		/* send mode */
     msg->content->unlink = 1;
     msg->content->use_disp = 0;
     msg->content->disposition = DISPINLINE;
-    if (option (OPTTEXTFLOWED) && msg->content->type == TYPETEXT && !ascii_strcasecmp (msg->content->subtype, "plain"))
-      mutt_set_parameter ("format", "flowed", &msg->content->parameter);
     
     if (!tempfile)
     {
@@ -1306,6 +1307,12 @@ ci_send_message (int flags,		/* send mode */
      */
     msg->replied = 0;
 
+    if (! (flags & SENDKEY))
+    {
+      if (option (OPTTEXTFLOWED) && msg->content->type == TYPETEXT && !ascii_strcasecmp (msg->content->subtype, "plain"))
+        mutt_set_parameter ("format", "flowed", &msg->content->parameter);
+    }
+
     /* $use_from and/or $from might have changed in a send-hook */
     if (killfrom)
     {
@@ -1341,7 +1348,7 @@ ci_send_message (int flags,		/* send mode */
    * envelope sender.
    */
   mutt_message_hook (NULL, msg, M_SEND2HOOK);
-  
+
   /* wait until now to set the real name portion of our return address so
      that $realname can be set in a send-hook */
   if (msg->env->from && !msg->env->from->personal
@@ -1404,8 +1411,17 @@ ci_send_message (int flags,		/* send mode */
 	  mutt_perror (msg->content->filename);
       }
       
-      if (option (OPTTEXTFLOWED))
-	rfc3676_space_stuff (msg);
+      /* If using format=flowed, perform space stuffing.  Avoid stuffing when
+       * recalling a postponed message where the stuffing was already
+       * performed.  If it has already been performed, the format=flowed
+       * parameter will be present.
+       */
+      if (option (OPTTEXTFLOWED) && msg->content->type == TYPETEXT && !ascii_strcasecmp("plain", msg->content->subtype))
+      {
+	char *p = mutt_get_parameter("format", msg->content->parameter);
+	if (ascii_strcasecmp("flowed", NONULL(p)))
+	  rfc3676_space_stuff (msg);
+      }
 
       mutt_message_hook (NULL, msg, M_SEND2HOOK);
     }
@@ -1553,7 +1569,9 @@ main_loop:
       mutt_prepare_envelope (msg->env, 0);
       mutt_env_to_idna (msg->env, NULL, NULL);	/* Handle bad IDNAs the next time. */
 
-      if (!Postponed || mutt_write_fcc (NONULL (Postponed), msg, (cur && (flags & SENDREPLY)) ? cur->env->message_id : NULL, 1, fcc) < 0)
+      if (!Postponed || mutt_write_fcc (NONULL (Postponed), msg,
+	                    (cur && (flags & SENDREPLY)) ?
+			             cur->env->message_id : NULL, 1, fcc, NULL) < 0)
       {
 	msg->content = mutt_remove_multipart (msg->content);
 	decode_descriptions (msg->content);
@@ -1735,7 +1753,7 @@ full_fcc:
        * message was first postponed.
        */
       msg->received = time (NULL);
-      if (mutt_write_fcc (fcc, msg, NULL, 0, NULL) == -1)
+      if (mutt_write_fcc (fcc, msg, NULL, 0, NULL, &finalpath) == -1)
       {
 	/*
 	 * Error writing FCC, we should abort sending.
@@ -1796,6 +1814,7 @@ full_fcc:
       msg->content = mutt_remove_multipart (msg->content);
       decode_descriptions (msg->content);
       mutt_unprepare_envelope (msg->env);
+      FREE(&finalpath);
       goto main_loop;
     }
     else
@@ -1804,8 +1823,13 @@ full_fcc:
       goto cleanup;
     }
   }
-  else if (!option (OPTNOCURSES) && ! (flags & SENDMAILX))
+  else if (!option (OPTNOCURSES) && ! (flags & SENDMAILX)) {
     mutt_message (i == 0 ? _("Mail sent.") : _("Sending in background."));
+#ifdef USE_NOTMUCH
+    if (option(OPTNOTMUCHRECORD))
+      nm_record_message(ctx, finalpath, cur);
+#endif
+  }
 
   if (WithCrypto && (msg->security & ENCRYPT))
     FREE (&pgpkeylist);
@@ -1844,7 +1868,7 @@ cleanup:
    
   safe_fclose (&tempfp);
   mutt_free_header (&msg);
-  
+  FREE(&finalpath);
   return rv;
 }
 

@@ -4,6 +4,7 @@
  * Copyright (C) 2001  Thomas Roessler <roessler@does-not-exist.org>
  *                     Oliver Ehli <elmy@acm.org>
  * Copyright (C) 2002, 2003, 2004 g10 Code GmbH
+ * Copyright (C) 2012 Michael R. Elkins <me@sigpipe.org>
  *
  *     This program is free software; you can redistribute it and/or modify
  *     it under the terms of the GNU General Public License as published by
@@ -72,7 +73,8 @@
 #define xtoi_2(p)   ((xtoi_1(p) * 16) + xtoi_1((p)+1))
 
 #define PKA_NOTATION_NAME "pka-address@gnupg.org"
-#define is_pka_notation(notation) (! strcmp ((notation)->name, \
+#define is_pka_notation(notation) ((notation)->name && \
+				    ! strcmp ((notation)->name, \
 					     PKA_NOTATION_NAME))
 
 /* Values used for comparing addresses. */
@@ -81,9 +83,6 @@
 #define CRYPT_KV_STRING   4
 #define CRYPT_KV_STRONGID 8
 #define CRYPT_KV_MATCH (CRYPT_KV_ADDR|CRYPT_KV_STRING)
-
-/* static local variables */
-static int GpgmeLocaleSet = 0;
 
 /*
  * Type definitions.
@@ -341,16 +340,6 @@ static gpgme_ctx_t create_gpgme_context (int for_smime)
 {
   gpgme_error_t err;
   gpgme_ctx_t ctx;
-
-  if (!GpgmeLocaleSet)
-  {
-    gpgme_set_locale (NULL, LC_CTYPE, setlocale (LC_CTYPE, NULL));
-#ifdef ENABLE_NLS
-    gpgme_set_locale (NULL, LC_MESSAGES, setlocale (LC_MESSAGES, NULL));
-#endif
-
-    GpgmeLocaleSet = 1;
-  }
 
   err = gpgme_new (&ctx);
   if (err)
@@ -1964,6 +1953,29 @@ err_ctx:
   return rc;
 }
 
+/* Check that 'b' is a complete line containing 'a' followed by either LF or CRLF.
+ *
+ * returns:
+ * 0 if the is a match
+ * -1 otherwise
+ */
+static int line_compare(const char *a, size_t n, const char *b)
+{
+  if (mutt_strncmp(a, b, n) == 0)
+  {
+    /* at this point we know that 'b' is at least 'n' chars long */
+    if (b[n] == '\n' || (b[n] == '\r' && b[n+1] == '\n'))
+      return 0;
+  }
+  return -1;
+}
+
+#define _LINE_COMPARE(_x,_y) !line_compare(_x, sizeof(_x)-1, _y)
+#define MESSAGE(_y) _LINE_COMPARE("MESSAGE-----", _y)
+#define SIGNED_MESSAGE(_y) _LINE_COMPARE("SIGNED MESSAGE-----", _y)
+#define PUBLIC_KEY_BLOCK(_y) _LINE_COMPARE("PUBLIC KEY BLOCK-----", _y)
+#define BEGIN_PGP_SIGNATURE(_y) _LINE_COMPARE("-----BEGIN PGP SIGNATURE-----", _y)
+
 /* 
  * Implementation of `pgp_check_traditional'.
  */
@@ -2000,12 +2012,12 @@ static int pgp_check_traditional_one_body (FILE *fp, BODY *b, int tagged_only)
   {
     if (!mutt_strncmp ("-----BEGIN PGP ", buf, 15))
     {
-      if (!mutt_strcmp ("MESSAGE-----\n", buf + 15))
+      if (MESSAGE(buf + 15))
       {
 	enc = 1;
 	break;
       }
-      else if (!mutt_strcmp ("SIGNED MESSAGE-----\n", buf + 15))
+      else if (SIGNED_MESSAGE(buf + 15))
       {
 	sgn = 1;
 	break;
@@ -2125,7 +2137,7 @@ static void copy_clearsigned (gpgme_data_t data, STATE *s, char *charset)
       continue;
     }
 
-    if (!mutt_strcmp (buf, "-----BEGIN PGP SIGNATURE-----\n"))
+    if (BEGIN_PGP_SIGNATURE(buf))
       break;
     
     if (armor_header)
@@ -2147,7 +2159,6 @@ static void copy_clearsigned (gpgme_data_t data, STATE *s, char *charset)
   fgetconv_close (&fc);
   safe_fclose (&fp);
 }
-
 
 /* Support for classic_application/pgp */
 int pgp_gpgme_application_handler (BODY *m, STATE *s)
@@ -2191,14 +2202,14 @@ int pgp_gpgme_application_handler (BODY *m, STATE *s)
         {
           clearsign = 0;
           
-          if (!mutt_strcmp ("MESSAGE-----\n", buf + 15))
+          if (MESSAGE(buf + 15))
             needpass = 1;
-          else if (!mutt_strcmp ("SIGNED MESSAGE-----\n", buf + 15))
+          else if (SIGNED_MESSAGE(buf + 15))
             {
               clearsign = 1;
               needpass = 0;
             }
-          else if (!mutt_strcmp ("PUBLIC KEY BLOCK-----\n", buf + 15))
+          else if (PUBLIC_KEY_BLOCK(buf + 15))
           {
             needpass = 0;
             pgp_keyblock = 1;
@@ -4342,6 +4353,23 @@ char *smime_gpgme_findkeys (ADDRESS *to, ADDRESS *cc, ADDRESS *bcc)
  * Implementation of `init'.
  */
 
+/* This function contains common code needed to be executed for both the pgp
+ * and smime support of gpgme. */
+static void init_common(void)
+{
+  /* this initialization should only run one time, but it may be called by
+   * either pgp_gpgme_init or smime_gpgme_init */
+  static bool has_run = 0;
+  if (!has_run) {
+    gpgme_check_version(NULL);
+    gpgme_set_locale (NULL, LC_CTYPE, setlocale (LC_CTYPE, NULL));
+#ifdef ENABLE_NLS
+    gpgme_set_locale (NULL, LC_MESSAGES, setlocale (LC_MESSAGES, NULL));
+#endif
+    has_run = true;
+  }
+}
+
 /* Initialization.  */
 static void init_gpgme (void)
 {
@@ -4356,11 +4384,13 @@ static void init_gpgme (void)
 
 void pgp_gpgme_init (void)
 {
+  init_common();
   init_gpgme ();
 }
 
 void smime_gpgme_init (void)
 {
+  init_common();
 }
 
 static int gpgme_send_menu (HEADER *msg, int *redraw, int is_smime)
